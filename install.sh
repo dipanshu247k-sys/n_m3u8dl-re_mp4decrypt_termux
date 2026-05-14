@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Unified variable you can use elsewhere in this script:
-#   SELECTED_DIR -> the folder you chose (or a fallback working dir)
+# Unified variable (chosen at the end).
+# You can copy/paste it or use it when sourcing this script.
 SELECTED_DIR=""
+
+# Internal working directories (not user-facing)
+WORK_ROOT=""
+DL_DIR=""
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
@@ -11,7 +15,6 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 print_selected_dir() {
   # Blue output if stdout is a TTY and NO_COLOR isn't set.
-  # This prints the unified folder selection variable (same role as in select.sh).
   local msg
   msg="SELECTED_DIR=${SELECTED_DIR:-}"
 
@@ -23,13 +26,10 @@ print_selected_dir() {
 }
 
 is_termux() {
-  # Termux typically exports PREFIX=/data/data/com.termux/files/usr
-  # and has `termux-setup-storage` available.
   [[ -n "${PREFIX:-}" && "${PREFIX:-}" == /data/data/com.termux/files/usr* ]] || have termux-setup-storage
 }
 
 bin_dir() {
-  # bash is usually in $PREFIX/bin. Use it to find the correct bin dir.
   local bash_path
   bash_path="$(command -v bash)"
   dirname "$bash_path"
@@ -43,41 +43,13 @@ cpu_count() {
   fi
 }
 
-ensure_termux_storage() {
-  # On Termux, /sdcard is available after running termux-setup-storage.
-  if [[ -d "/sdcard/" && -r "/sdcard/" ]]; then
-    return 0
-  fi
+setup_work_dirs() {
+  WORK_ROOT="$(mktemp -d)"
+  DL_DIR="${WORK_ROOT%/}/.downloads"
+  mkdir -p "$DL_DIR"
 
-  if is_termux && have termux-setup-storage; then
-    say "Storage access not available yet. Run: termux-setup-storage"
-    die "After granting permission, re-run this script."
-  fi
-
-  die "/sdcard is not accessible on this system."
-}
-
-choose_folder_from_sdcard() {
-  ensure_termux_storage
-
-  have fzf || die "fzf is required for folder selection. Install it (Termux: pkg install -y fzf)."
-
-  # Efficient directory listing:
-  # - prune Android/data and Android/obb (huge + often restricted)
-  # - prune hidden folders (*/.*)
-  # Note: trailing slash on /sdcard/ matters on your system because /sdcard is a symlink.
-  local choice
-  choice="$(find /sdcard/ \
-      \( -path '/sdcard/Android/data' -o -path '/sdcard/Android/obb' -o -path '*/.*' \) -prune -o \
-      -type d -print 2>/dev/null \
-    | fzf --prompt='Select a folder: ' --height=40% --layout=reverse --no-multi)" || true
-
-  if [[ -z "${choice:-}" ]]; then
-    die "No folder selected."
-  fi
-
-  SELECTED_DIR="$choice"
-  export SELECTED_DIR
+  # Cleanup even if something fails.
+  trap 'rm -rf "$WORK_ROOT" 2>/dev/null || true' EXIT
 }
 
 ensure_deps_termux() {
@@ -103,39 +75,46 @@ ensure_deps_termux() {
   fi
 }
 
-select_from_list_fzf_or_prompt() {
-  # Args:
-  #   $1: prompt
-  #   stdin: lines to select from
-  # Returns:
-  #   echoes the selected line
-  local prompt
-  prompt="$1"
+choose_folder_from_sdcard_end() {
+  # Ask user at the END (as requested). If not possible, fall back to $PWD.
 
-  if have fzf; then
-    fzf --prompt="$prompt" --height=40% --layout=reverse --no-multi
-  else
-    # Fallback: numbered prompt
-    local -a lines=()
-    local line
-    while IFS= read -r line; do
-      lines+=("$line")
-    done
+  if [[ ! -d "/sdcard/" || ! -r "/sdcard/" ]]; then
+    if is_termux && have termux-setup-storage; then
+      say "Note: /sdcard is not accessible. To enable folder picking, run: termux-setup-storage"
+    else
+      say "Note: /sdcard is not accessible on this system."
+    fi
 
-    ((${#lines[@]} > 0)) || return 1
-
-    local i
-    for i in "${!lines[@]}"; do
-      printf '[%s] %s\n' "$((i+1))" "${lines[$i]}"
-    done
-
-    local choice
-    read -r -p "Enter number (1-${#lines[@]}): " choice
-    [[ "$choice" =~ ^[0-9]+$ ]] || return 1
-    (( choice >= 1 && choice <= ${#lines[@]} )) || return 1
-
-    printf '%s\n' "${lines[$((choice-1))]}"
+    SELECTED_DIR="$PWD"
+    export SELECTED_DIR
+    return 0
   fi
+
+  if ! have fzf; then
+    say "Note: fzf is not installed; falling back to SELECTED_DIR=$PWD"
+    SELECTED_DIR="$PWD"
+    export SELECTED_DIR
+    return 0
+  fi
+
+  # Efficient directory listing:
+  # - prune Android/data and Android/obb (huge + often restricted)
+  # - prune hidden folders (*/.*)
+  # Note: trailing slash on /sdcard/ matters on some systems where /sdcard is a symlink.
+  local choice
+  choice="$(find /sdcard/ \
+      \( -path '/sdcard/Android/data' -o -path '/sdcard/Android/obb' -o -path '*/.*' \) -prune -o \
+      -type d -print 2>/dev/null \
+    | fzf --prompt='Select a folder: ' --height=40% --layout=reverse --no-multi)" || true
+
+  if [[ -z "${choice:-}" ]]; then
+    say "No folder selected; falling back to SELECTED_DIR=$PWD"
+    SELECTED_DIR="$PWD"
+  else
+    SELECTED_DIR="$choice"
+  fi
+
+  export SELECTED_DIR
 }
 
 install_n_m3u8dl_re() {
@@ -149,33 +128,53 @@ install_n_m3u8dl_re() {
   say "Fetching latest release info for ${repo}..."
   release_json="$(curl -fsSL "$api_url")"
 
-  # TSV: name \t url
-  local assets_tsv
-  assets_tsv="$(jq -r '.assets[] | [.name, .browser_download_url] | @tsv' <<<"$release_json")"
+  local -a asset_names=()
+  local -a asset_urls=()
 
-  [[ -n "$assets_tsv" ]] || die "No assets found in latest release."
+  mapfile -t asset_names < <(jq -r '.assets[].name' <<<"$release_json")
+  mapfile -t asset_urls  < <(jq -r '.assets[].browser_download_url' <<<"$release_json")
 
-  say "Choose the N_m3u8DL-RE asset to install:"
+  ((${#asset_names[@]} > 0)) || die "No assets found in latest release."
+  ((${#asset_names[@]} == ${#asset_urls[@]})) || die "Asset list mismatch from GitHub API."
 
-  local selected_line name url
-  selected_line="$(printf '%s\n' "$assets_tsv" | select_from_list_fzf_or_prompt 'Asset: ' )" || die "No asset selected."
-  name="${selected_line%%$'\t'*}"
-  url="${selected_line#*$'\t'}"
+  say "Choose the N_m3u8DL-RE file to download (URLs hidden):"
 
-  [[ -n "$name" && -n "$url" ]] || die "Failed to parse selected asset."
+  local selected_name=""
+  if have fzf; then
+    selected_name="$(printf '%s\n' "${asset_names[@]}" | fzf --prompt='Asset: ' --height=40% --layout=reverse --no-multi)" || true
+  else
+    local i
+    for i in "${!asset_names[@]}"; do
+      printf '[%s] %s\n' "$((i+1))" "${asset_names[$i]}"
+    done
+    local choice
+    read -r -p "Enter the number (1-${#asset_names[@]}): " choice
+    [[ "${choice:-}" =~ ^[0-9]+$ ]] || die "Invalid selection"
+    (( choice >= 1 && choice <= ${#asset_names[@]} )) || die "Invalid selection"
+    selected_name="${asset_names[$((choice-1))]}"
+  fi
 
-  local work_root dl_dir tmp_dir archive_path
-  work_root="${SELECTED_DIR:-$PWD}"
-  dl_dir="${work_root%/}/.downloads"
-  mkdir -p "$dl_dir"
+  [[ -n "${selected_name:-}" ]] || die "No asset selected."
+
+  local selected_url=""
+  local idx
+  for idx in "${!asset_names[@]}"; do
+    if [[ "${asset_names[$idx]}" == "$selected_name" ]]; then
+      selected_url="${asset_urls[$idx]}"
+      break
+    fi
+  done
+  [[ -n "${selected_url:-}" ]] || die "Failed to map selected asset to its download URL."
+
+  local archive_path tmp_dir
+  archive_path="${DL_DIR%/}/${selected_name}"
   tmp_dir="$(mktemp -d)"
-  archive_path="${dl_dir%/}/$name"
 
-  say "Downloading: $name"
-  curl -fL --retry 3 --retry-delay 1 -o "$archive_path" "$url"
+  say "Downloading: $selected_name"
+  curl -fL --retry 3 --retry-delay 1 -o "$archive_path" "$selected_url"
 
   say "Extracting..."
-  case "$name" in
+  case "$selected_name" in
     *.tar.gz|*.tgz|*.tar.xz|*.tar.bz2|*.tar)
       tar -xf "$archive_path" -C "$tmp_dir"
       ;;
@@ -183,17 +182,14 @@ install_n_m3u8dl_re() {
       unzip -q "$archive_path" -d "$tmp_dir"
       ;;
     *)
-      # Could be a raw binary
       cp -f "$archive_path" "$tmp_dir/"
       ;;
   esac
 
-  # Try to locate the binary in extracted contents
   local candidate
   candidate="$(find "$tmp_dir" -maxdepth 3 -type f \( -name 'N_m3u8DL-RE*' -o -name 'n_m3u8dl-re*' \) 2>/dev/null | head -n 1)" || true
 
   if [[ -z "${candidate:-}" ]]; then
-    # Fallback: if there is exactly one file (not counting dirs), install it.
     local file_count
     file_count="$(find "$tmp_dir" -type f | wc -l | tr -d ' ')"
     if [[ "$file_count" == "1" ]]; then
@@ -228,11 +224,8 @@ install_mp4decrypt_from_bento4() {
   zip_url="$(curl -fsSL "$api_url" | jq -r '.[0].zipball_url')"
   [[ -n "$zip_url" && "$zip_url" != "null" ]] || die "Failed to find Bento4 zipball_url."
 
-  local work_root dl_dir zip_path build_root src_dir
-  work_root="${SELECTED_DIR:-$PWD}"
-  dl_dir="${work_root%/}/.downloads"
-  mkdir -p "$dl_dir"
-  zip_path="${dl_dir%/}/Bento4-latest.zip"
+  local zip_path build_root src_dir
+  zip_path="${DL_DIR%/}/Bento4-latest.zip"
 
   say "Downloading Bento4 source..."
   curl -fL --retry 3 --retry-delay 1 -o "$zip_path" "$zip_url"
@@ -266,44 +259,19 @@ install_mp4decrypt_from_bento4() {
 }
 
 main() {
-  # If running on Termux, auto-install deps where possible.
+  # Termux: install deps first, but do NOT ask for /sdcard folder until the end.
   if is_termux; then
     ensure_deps_termux
   fi
 
-  # Always pick a folder from /sdcard on Termux (this is the unified variable).
-  if is_termux; then
-    choose_folder_from_sdcard
-    say "Using SELECTED_DIR: $SELECTED_DIR"
-  else
-    SELECTED_DIR="$PWD"
-    export SELECTED_DIR
-    say "Non-Termux environment detected; using SELECTED_DIR=$SELECTED_DIR"
-  fi
+  setup_work_dirs
 
-  say "What do you want to install?"
-  local action
-  action="$(printf '%s\n' \
-      'Install N_m3u8DL-RE' \
-      'Build & install mp4decrypt (Bento4)' \
-      'Install both' \
-      | select_from_list_fzf_or_prompt 'Action: ' )" || die "No action selected."
+  # 1) Always install both tools (no prompt).
+  install_n_m3u8dl_re
+  install_mp4decrypt_from_bento4
 
-  case "$action" in
-    'Install N_m3u8DL-RE')
-      install_n_m3u8dl_re
-      ;;
-    'Build & install mp4decrypt (Bento4)')
-      install_mp4decrypt_from_bento4
-      ;;
-    'Install both')
-      install_n_m3u8dl_re
-      install_mp4decrypt_from_bento4
-      ;;
-    *)
-      die "Unknown action: $action"
-      ;;
-  esac
+  # 2) Ask for choosing folder in the end (as requested).
+  choose_folder_from_sdcard_end
 
   say "Done."
   say "BIN_DIR=$(bin_dir)"
