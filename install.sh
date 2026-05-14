@@ -16,7 +16,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 print_selected_dir() {
   # Blue output if stdout is a TTY and NO_COLOR isn't set.
   local msg
-  msg="SELECTED_DIR=${SELECTED_DIR:-}"
+  msg=" --save-dir ${SELECTED_DIR:-} "
 
   if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
     printf '\033[34m%s\033[0m\n' "$msg"
