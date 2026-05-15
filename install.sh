@@ -1,22 +1,45 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Unified variable (chosen at the end).
-# You can copy/paste it or use it when sourcing this script.
-SELECTED_DIR=""
-
-# Internal working directories (not user-facing)
-WORK_ROOT=""
-DL_DIR=""
+# ------------------------------
+# Functions (definitions first)
+# ------------------------------
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
-print_selected_dir() {
-  # Blue output if stdout is a TTY and NO_COLOR isn't set.
+init_logging() {
+  LOG_FILE="${LOG_FILE:-nmt.logs}"
+  : >"$LOG_FILE"
+  say "Logs: $LOG_FILE"
+}
+
+log() {
+  # Log a line to the log file (never to stdout).
+  printf '%s\n' "$*" >>"$LOG_FILE"
+}
+
+run() {
+  # Run a command and log all output.
+  # Usage: run cmd arg1 arg2 ...
+  {
+    printf '\n$ %q' "$1"
+    shift
+    for a in "$@"; do printf ' %q' "$a"; done
+    printf '\n'
+  } >>"$LOG_FILE"
+
+  "$@" >>"$LOG_FILE" 2>&1
+}
+
+step_start() { say "[START] $*"; }
+step_done() { say "[DONE ] $*"; }
+
+print_selected_dir_blue() {
+  # Print selected dir at the end in blue (TTY only).
   local msg
-  msg=" --save-dir ${SELECTED_DIR:-} "
+  msg="--save-dir ${SELECTED_DIR:-}"
 
   if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
     printf '\033[34m%s\033[0m\n' "$msg"
@@ -25,131 +48,55 @@ print_selected_dir() {
   fi
 }
 
-is_termux() {
-  [[ -n "${PREFIX:-}" && "${PREFIX:-}" == /data/data/com.termux/files/usr* ]] || have termux-setup-storage
-}
+ensure_termux_deps() {
+  # Installs missing deps via `pkg` if available.
+  # Args are Termux package names.
+  local -a pkgs=()
+  local p
 
-bin_dir() {
-  local bash_path
-  bash_path="$(command -v bash)"
-  dirname "$bash_path"
-}
-
-cpu_count() {
-  if have nproc; then
-    nproc
-  else
-    getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1
-  fi
-}
-
-setup_work_dirs() {
-  WORK_ROOT="$(mktemp -d)"
-  DL_DIR="${WORK_ROOT%/}/.downloads"
-  mkdir -p "$DL_DIR"
-
-  # Cleanup even if something fails.
-  trap 'rm -rf "$WORK_ROOT" 2>/dev/null || true' EXIT
-}
-
-ensure_deps_termux() {
-  # Install missing dependencies on Termux (if `pkg` exists).
   have pkg || return 0
 
-  local -a needed=()
-
-  have curl  || needed+=(curl)
-  have jq    || needed+=(jq)
-  have fzf   || needed+=(fzf)
-  have tar   || needed+=(tar)
-  have unzip || needed+=(unzip)
-  have ffmpeg || needed+=(ffmpeg)
-
-  # Build dependencies for Bento4/mp4decrypt
-  have cmake || needed+=(cmake)
-  have make  || needed+=(make)
-  have clang || needed+=(clang)
-
-  if ((${#needed[@]} > 0)); then
-    say "Installing dependencies: ${needed[*]}"
-    pkg install -y "${needed[@]}"
-  fi
-}
-
-choose_folder_from_sdcard_end() {
-  # Ask user at the END (as requested). If not possible, fall back to $PWD.
-
-  if [[ ! -d "/sdcard/" || ! -r "/sdcard/" ]]; then
-    if is_termux && have termux-setup-storage; then
-      say "Note: /sdcard is not accessible. To enable folder picking, run: termux-setup-storage"
-    else
-      say "Note: /sdcard is not accessible on this system."
+  for p in "$@"; do
+    # Heuristic: package name matches its main binary.
+    # If not found, install it.
+    if ! have "$p"; then
+      pkgs+=("$p")
     fi
+  done
 
-    SELECTED_DIR="$PWD"
-    export SELECTED_DIR
-    return 0
+  if ((${#pkgs[@]} > 0)); then
+    run pkg install -y "${pkgs[@]}"
   fi
-
-  if ! have fzf; then
-    say "Note: fzf is not installed; falling back to SELECTED_DIR=$PWD"
-    SELECTED_DIR="$PWD"
-    export SELECTED_DIR
-    return 0
-  fi
-
-  # Efficient directory listing:
-  # - prune Android/data and Android/obb (huge + often restricted)
-  # - prune hidden folders (*/.*)
-  # Note: trailing slash on /sdcard/ matters on some systems where /sdcard is a symlink.
-  local choice
-  choice="$(find /sdcard/ \
-  \( -path '/sdcard/Android' -o -path '/sdcard/Android/*' -o -path '*/.*' \) -prune -o \
-      -type d -print 2>/dev/null \
-    | fzf --prompt='Select a folder: ' --height=40% --layout=reverse --no-multi)" || true
-
-  if [[ -z "${choice:-}" ]]; then
-    say "No folder selected; falling back to SELECTED_DIR=$PWD"
-    SELECTED_DIR="$PWD"
-  else
-    SELECTED_DIR="$choice"
-  fi
-
-  export SELECTED_DIR
 }
 
 install_n_m3u8dl_re() {
   have curl || die "curl is required"
-  have jq   || die "jq is required"
+  have jq || die "jq is required"
 
   local repo api_url release_json
   repo="nilaoda/N_m3u8DL-RE"
   api_url="https://api.github.com/repos/${repo}/releases/latest"
 
-  say "Fetching latest release info for ${repo}..."
   release_json="$(curl -fsSL "$api_url")"
 
   local -a asset_names=()
   local -a asset_urls=()
-
   mapfile -t asset_names < <(jq -r '.assets[].name' <<<"$release_json")
-  mapfile -t asset_urls  < <(jq -r '.assets[].browser_download_url' <<<"$release_json")
+  mapfile -t asset_urls < <(jq -r '.assets[].browser_download_url' <<<"$release_json")
 
-  ((${#asset_names[@]} > 0)) || die "No assets found in latest release."
-  ((${#asset_names[@]} == ${#asset_urls[@]})) || die "Asset list mismatch from GitHub API."
-
-  say "Choose the N_m3u8DL-RE file to download (URLs hidden):"
+  ((${#asset_names[@]} > 0)) || die "No assets found for ${repo}."
 
   local selected_name=""
   if have fzf; then
-    selected_name="$(printf '%s\n' "${asset_names[@]}" | fzf --prompt='Asset: ' --height=40% --layout=reverse --no-multi)" || true
+    selected_name="$(printf '%s\n' "${asset_names[@]}" | fzf --prompt='N_m3u8DL-RE asset: ' --height=40% --layout=reverse --no-multi)" || true
   else
+    # Fallback prompt
     local i
     for i in "${!asset_names[@]}"; do
       printf '[%s] %s\n' "$((i+1))" "${asset_names[$i]}"
     done
     local choice
-    read -r -p "Enter the number (1-${#asset_names[@]}): " choice
+    read -r -p "Enter number (1-${#asset_names[@]}): " choice
     [[ "${choice:-}" =~ ^[0-9]+$ ]] || die "Invalid selection"
     (( choice >= 1 && choice <= ${#asset_names[@]} )) || die "Invalid selection"
     selected_name="${asset_names[$((choice-1))]}"
@@ -167,116 +114,143 @@ install_n_m3u8dl_re() {
   done
   [[ -n "${selected_url:-}" ]] || die "Failed to map selected asset to its download URL."
 
-  local archive_path tmp_dir
-  archive_path="${DL_DIR%/}/${selected_name}"
+  local tmp_dir archive_path
   tmp_dir="$(mktemp -d)"
+  archive_path="${tmp_dir%/}/${selected_name}"
 
-  say "Downloading: $selected_name"
-  curl -fL --retry 3 --retry-delay 1 -o "$archive_path" "$selected_url"
+  run curl -fL --retry 3 --retry-delay 1 -o "$archive_path" "$selected_url"
 
-  say "Extracting..."
+  # Extract into tmp_dir/extract
+  local extract_dir
+  extract_dir="${tmp_dir%/}/extract"
+  mkdir -p "$extract_dir"
+
   case "$selected_name" in
     *.tar.gz|*.tgz|*.tar.xz|*.tar.bz2|*.tar)
-      tar -xf "$archive_path" -C "$tmp_dir"
+      run tar -xf "$archive_path" -C "$extract_dir"
       ;;
     *.zip)
-      unzip -q "$archive_path" -d "$tmp_dir"
+      run unzip -q "$archive_path" -d "$extract_dir"
       ;;
     *)
-      cp -f "$archive_path" "$tmp_dir/"
+      run cp -f "$archive_path" "$extract_dir/"
       ;;
   esac
 
+  # Find the binary
   local candidate
-  candidate="$(find "$tmp_dir" -maxdepth 3 -type f \( -name 'N_m3u8DL-RE*' -o -name 'n_m3u8dl-re*' \) 2>/dev/null | head -n 1)" || true
+  candidate="$(find "$extract_dir" -maxdepth 4 -type f \( -name 'N_m3u8DL-RE*' -o -name 'n_m3u8dl-re*' \) 2>/dev/null | head -n 1)" || true
+  [[ -n "${candidate:-}" ]] || die "Could not find extracted N_m3u8DL-RE binary. See $LOG_FILE"
 
-  if [[ -z "${candidate:-}" ]]; then
-    local file_count
-    file_count="$(find "$tmp_dir" -type f | wc -l | tr -d ' ')"
-    if [[ "$file_count" == "1" ]]; then
-      candidate="$(find "$tmp_dir" -type f | head -n 1)"
-    fi
-  fi
+  : "${PREFIX:=/data/data/com.termux/files/usr}"
+  mkdir -p "$PREFIX/bin" "$PREFIX/lib"
 
-  [[ -n "${candidate:-}" ]] || die "Could not find extracted N_m3u8DL-RE binary. Inspect: $tmp_dir"
+  # Install to $PREFIX/bin (explicit, no basename)
+  run cp -f "$candidate" "$PREFIX/bin/N_m3u8DL-RE"
+  run chmod +x "$PREFIX/bin/N_m3u8DL-RE" || true
 
-  local dest
-  dest="$(bin_dir)/$(basename "$candidate")"
-  say "Installing to: $dest"
-  cp -f "$candidate" "$dest"
-  chmod +x "$dest" || true
+  # Patch rpath
+  have patchelf || die "patchelf is required"
+  run patchelf --set-rpath "$PREFIX/lib" "$PREFIX/bin/N_m3u8DL-RE"
 
-  rm -rf "$tmp_dir"
-  say "Installed: $(basename "$dest")"
+  run rm -rf "$tmp_dir"
 }
 
 install_mp4decrypt_from_bento4() {
-  have curl  || die "curl is required"
-  have jq    || die "jq is required"
+  have curl || die "curl is required"
+  have jq || die "jq is required"
   have unzip || die "unzip is required"
   have cmake || die "cmake is required"
-  have make  || die "make is required"
+  have make || die "make is required"
 
   local repo api_url zip_url
   repo="axiomatic-systems/Bento4"
   api_url="https://api.github.com/repos/${repo}/tags"
 
-  say "Fetching latest tag for ${repo}..."
   zip_url="$(curl -fsSL "$api_url" | jq -r '.[0].zipball_url')"
   [[ -n "$zip_url" && "$zip_url" != "null" ]] || die "Failed to find Bento4 zipball_url."
 
-  local zip_path build_root src_dir
-  zip_path="${DL_DIR%/}/Bento4-latest.zip"
+  local tmp_dir zip_path
+  tmp_dir="$(mktemp -d)"
+  zip_path="${tmp_dir%/}/Bento4.zip"
 
-  say "Downloading Bento4 source..."
-  curl -fL --retry 3 --retry-delay 1 -o "$zip_path" "$zip_url"
+  run curl -fL --retry 3 --retry-delay 1 -o "$zip_path" "$zip_url"
 
-  build_root="$(mktemp -d)"
-  say "Extracting source..."
-  unzip -q "$zip_path" -d "$build_root"
+  local src_root
+  src_root="${tmp_dir%/}/src"
+  mkdir -p "$src_root"
+  run unzip -q "$zip_path" -d "$src_root"
 
   # Zipball extracts into a single top-level directory.
-  src_dir="$(find "$build_root" -mindepth 1 -maxdepth 1 -type d | head -n 1)" || true
-  [[ -n "${src_dir:-}" ]] || die "Could not find extracted source directory."
+  local src_dir
+  src_dir="$(find "$src_root" -mindepth 1 -maxdepth 1 -type d | head -n 1)" || true
+  [[ -n "${src_dir:-}" ]] || die "Could not find extracted Bento4 source directory."
 
-  say "Configuring build..."
-  mkdir -p "$src_dir/cmakebuild"
+  local build_dir
+  build_dir="${src_dir%/}/cmakebuild"
+  mkdir -p "$build_dir"
+
   (
-    cd "$src_dir/cmakebuild"
-    cmake -DCMAKE_BUILD_TYPE=Release ..
-
-    say "Building mp4decrypt..."
-    make mp4decrypt -j"$(cpu_count)"
-
-    local dest
-    dest="$(bin_dir)/mp4decrypt"
-    say "Installing to: $dest"
-    cp -f "mp4decrypt" "$dest"
-    chmod +x "$dest" || true
+    cd "$build_dir"
+    run cmake -DCMAKE_BUILD_TYPE=Release ..
+    run make mp4decrypt -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
   )
 
-  rm -rf "$build_root"
-  say "Installed: mp4decrypt"
+  : "${PREFIX:=/data/data/com.termux/files/usr}"
+  mkdir -p "$PREFIX/bin"
+
+  run cp -f "$build_dir/mp4decrypt" "$PREFIX/bin/mp4decrypt"
+  run chmod +x "$PREFIX/bin/mp4decrypt" || true
+
+  run rm -rf "$tmp_dir"
 }
 
-main() {
-  # Termux: install deps first, but do NOT ask for /sdcard folder until the end.
-  if is_termux; then
-    ensure_deps_termux
+choose_dir_no_storage_checks() {
+  # No storage permission prompts/checks.
+  # If /sdcard is not readable or fzf is missing, fall back to $PWD.
+  SELECTED_DIR="$PWD"
+
+  have fzf || return 0
+
+  local choice
+  choice="$(find /sdcard/ \
+      \( -path '/sdcard/Android' -o -path '/sdcard/Android/*' -o -path '*/.*' \) -prune -o \
+      -type d -print 2>/dev/null \
+    | fzf --prompt='Select a folder: ' --height=40% --layout=reverse --no-multi)" || true
+
+  if [[ -n "${choice:-}" ]]; then
+    SELECTED_DIR="$choice"
   fi
 
-  setup_work_dirs
+  export SELECTED_DIR
+}
 
-  # 1) Always install both tools (no prompt).
+# ------------------------------
+# Calls (customizable at the end)
+# ------------------------------
+
+TERMUX_DEPS=(curl jq fzf tar unzip cmake make clang patchelf ffmpeg)
+
+main() {
+  init_logging
+
+  step_start "Step 1: dependencies"
+  ensure_termux_deps "${TERMUX_DEPS[@]}" || true
+  step_done "Step 1: dependencies"
+
+  step_start "Step 2: install N_m3u8DL-RE"
   install_n_m3u8dl_re
+  step_done "Step 2: install N_m3u8DL-RE"
+
+  step_start "Step 3: build/install mp4decrypt"
   install_mp4decrypt_from_bento4
+  step_done "Step 3: build/install mp4decrypt"
 
-  # 2) Ask for choosing folder in the end (as requested).
-  choose_folder_from_sdcard_end
+  step_start "Step 4: choose folder"
+  choose_dir_no_storage_checks
+  step_done "Step 4: choose folder"
 
-  say "Done."
-  say "BIN_DIR=$(bin_dir)"
-  print_selected_dir
+  print_selected_dir_blue
 }
 
 main "$@"
