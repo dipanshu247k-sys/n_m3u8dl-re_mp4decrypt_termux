@@ -204,8 +204,8 @@ install_mp4decrypt_from_bento4() {
   mkdir -p "$PREFIX/bin"
 
   local mp4decrypt_bin
-  mp4decrypt_bin="$(find "$build_dir" -type f -name 'mp4decrypt' 2>/dev/null | head -n 1)" || true
-  [[ -n "${mp4decrypt_bin:-}" ]] || die "Could not find built mp4decrypt binary. See $LOG_FILE"
+  mp4decrypt_bin="$(find "$build_dir" -type f -name 'mp4decrypt' 2>/dev/null | head -n 1)"
+  [[ -n "${mp4decrypt_bin:-}" ]] || die "Could not find built mp4decrypt binary in $build_dir. Build may have failed; see $LOG_FILE"
 
   run cp -f "$mp4decrypt_bin" "$PREFIX/bin/mp4decrypt"
   run chmod +x "$PREFIX/bin/mp4decrypt" || true
