@@ -33,6 +33,8 @@ print_selected_dir_blue() {
 }
 
 choose_dir_no_storage_checks() {
+  STORAGE_LOCATION="$PWD"
+
   have fzf || return 0
   [[ -d /sdcard && -r /sdcard ]] || return 0
 
@@ -44,15 +46,12 @@ choose_dir_no_storage_checks() {
 
   if [[ -n "${choice:-}" ]]; then
     STORAGE_LOCATION="$choice"
-  else
-    STORAGE_LOCATION="$PWD"
   fi
   export STORAGE_LOCATION
 }
 
 main() {
   ensure_termux_deps fzf
-  STORAGE_LOCATION="$PWD"
   choose_dir_no_storage_checks
   print_selected_dir_blue
 }
