@@ -197,16 +197,21 @@ install_mp4decrypt_from_bento4() {
   build_dir="${src_dir%/}/cmakebuild"
   mkdir -p "$build_dir"
 
-  (
-    cd "$build_dir"
-    run cmake -DCMAKE_BUILD_TYPE=Release ..
-    run make mp4decrypt -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
-  )
+  run cmake -S "$src_dir" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBRARY=OFF
+  run cmake --build "$build_dir" --target mp4decrypt -- -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
 
   : "${PREFIX:=/data/data/com.termux/files/usr}"
   mkdir -p "$PREFIX/bin"
 
-  run cp -f "$build_dir/mp4decrypt" "$PREFIX/bin/mp4decrypt"
+  local mp4decrypt_bin
+  local max_search_depth=4
+  mp4decrypt_bin="${build_dir%/}/mp4decrypt"
+  if [[ ! -f "$mp4decrypt_bin" ]]; then
+    mp4decrypt_bin="$(find "$build_dir" -maxdepth "$max_search_depth" -type f -name 'mp4decrypt' 2>/dev/null | head -n 1)"
+  fi
+  [[ -n "${mp4decrypt_bin:-}" && -f "$mp4decrypt_bin" ]] || die "Could not find built mp4decrypt binary in $build_dir. Check CMake/build output in $LOG_FILE"
+
+  run cp -f "$mp4decrypt_bin" "$PREFIX/bin/mp4decrypt"
   run chmod +x "$PREFIX/bin/mp4decrypt" || true
 
   run rm -rf "$tmp_dir"
