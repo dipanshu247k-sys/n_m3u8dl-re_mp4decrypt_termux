@@ -23,13 +23,16 @@ log() {
 run() {
   # Run a command and log all output.
   # Usage: run cmd arg1 arg2 ...
+  (($# > 0)) || die "run: missing command"
+  local -a cmd=("$@")
+
   {
-    printf '\n$'
-    for a in "$@"; do printf ' %q' "$a"; done
+    printf '\n$ %q' "${cmd[0]}"
+    for a in "${cmd[@]:1}"; do printf ' %q' "$a"; done
     printf '\n'
   } >>"$LOG_FILE"
 
-  "$@" >>"$LOG_FILE" 2>&1
+  "${cmd[@]}" >>"$LOG_FILE" 2>&1
 }
 
 step_start() { say "[START] $*"; }
