@@ -10,7 +10,7 @@ Debug Install
 curl  https://raw.githubusercontent.com/dipanshu247k-sys/n_m3u8dl-re_mp4decrypt_termux/main/install.sh | bash
 ```
 
-Standalone Location Picker Usage
+## Standalone Location Picker Usage
 ```bash
 curl -fsSL https://raw.githubusercontent.com/dipanshu247k-sys/n_m3u8dl-re_mp4decrypt_termux/main/loc.sh | bash
 ```
