@@ -104,7 +104,7 @@ choose_folder_from_sdcard_end() {
   # Note: trailing slash on /sdcard/ matters on some systems where /sdcard is a symlink.
   local choice
   choice="$(find /sdcard/ \
-      \( -path '/sdcard/Android/data' -o -path '/sdcard/Android/obb' -o -path '*/.*' \) -prune -o \
+  \( -path '/sdcard/Android' -o -path '/sdcard/Android/*' -o -path '*/.*' \) -prune -o \
       -type d -print 2>/dev/null \
     | fzf --prompt='Select a folder: ' --height=40% --layout=reverse --no-multi)" || true
 
