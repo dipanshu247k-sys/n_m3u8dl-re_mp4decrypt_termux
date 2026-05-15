@@ -24,8 +24,7 @@ run() {
   # Run a command and log all output.
   # Usage: run cmd arg1 arg2 ...
   {
-    printf '\n$ %q' "$1"
-    shift
+    printf '\n$'
     for a in "$@"; do printf ' %q' "$a"; done
     printf '\n'
   } >>"$LOG_FILE"
@@ -65,6 +64,7 @@ ensure_termux_deps() {
   done
 
   if ((${#pkgs[@]} > 0)); then
+    run pkg update -y
     run pkg install -y "${pkgs[@]}"
   fi
 }
@@ -229,13 +229,15 @@ choose_dir_no_storage_checks() {
 # Calls (customizable at the end)
 # ------------------------------
 
-TERMUX_DEPS=(curl jq fzf tar unzip cmake make clang patchelf ffmpeg)
+TERMUX_BOOTSTRAP_DEPS=(curl jq tar unzip)
+TERMUX_BUILD_DEPS=(cmake make clang patchelf ffmpeg fzf)
 
 main() {
   init_logging
 
   step_start "Step 1: dependencies"
-  ensure_termux_deps "${TERMUX_DEPS[@]}" || true
+  ensure_termux_deps "${TERMUX_BOOTSTRAP_DEPS[@]}" || true
+  ensure_termux_deps "${TERMUX_BUILD_DEPS[@]}" || true
   step_done "Step 1: dependencies"
 
   step_start "Step 2: install N_m3u8DL-RE"
