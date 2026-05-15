@@ -63,6 +63,7 @@ ensure_deps_termux() {
   have fzf   || needed+=(fzf)
   have tar   || needed+=(tar)
   have unzip || needed+=(unzip)
+  have ffmpeg || needed+=(ffmpeg)
 
   # Build dependencies for Bento4/mp4decrypt
   have cmake || needed+=(cmake)
