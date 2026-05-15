@@ -37,6 +37,7 @@ run() {
 
 step_start() { say "[START] $*"; }
 step_done() { say "[DONE ] $*"; }
+TERMUX_PKG_UPDATED=0
 
 print_selected_dir_blue() {
   # Print selected dir at the end in blue (TTY only).
@@ -67,7 +68,10 @@ ensure_termux_deps() {
   done
 
   if ((${#pkgs[@]} > 0)); then
-    run pkg update -y
+    if ((TERMUX_PKG_UPDATED == 0)); then
+      run pkg update -y
+      TERMUX_PKG_UPDATED=1
+    fi
     run pkg install -y "${pkgs[@]}"
   fi
 }
