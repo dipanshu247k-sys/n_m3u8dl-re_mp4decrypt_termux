@@ -204,9 +204,10 @@ install_mp4decrypt_from_bento4() {
   mkdir -p "$PREFIX/bin"
 
   local mp4decrypt_bin
+  local max_search_depth=4
   mp4decrypt_bin="${build_dir%/}/mp4decrypt"
   if [[ ! -f "$mp4decrypt_bin" ]]; then
-    mp4decrypt_bin="$(find "$build_dir" -maxdepth 4 -type f -name 'mp4decrypt' 2>/dev/null | head -n 1)"
+    mp4decrypt_bin="$(find "$build_dir" -maxdepth "$max_search_depth" -type f -name 'mp4decrypt' 2>/dev/null | head -n 1)"
   fi
   [[ -n "${mp4decrypt_bin:-}" && -f "$mp4decrypt_bin" ]] || die "Could not find built mp4decrypt binary in $build_dir. Check CMake/build output in $LOG_FILE"
 
