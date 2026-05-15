@@ -1,5 +1,11 @@
 # n_m3u8dl-re_mp4decrypt_termux
 
+Storage Permission 
+~
+```bash
+termux-setup-storage
+```
+
 Quick Install
 ```bash
 pkg update && curl -L -o nmt.deb "https://github.com/dipanshu247k-sys/n_m3u8dl-re_mp4decrypt_termux/releases/download/alpha/nmt-build.deb" && pkg install ./nmt.deb -y && rm nmt.deb
