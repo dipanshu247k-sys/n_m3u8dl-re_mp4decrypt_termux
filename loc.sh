@@ -4,10 +4,6 @@ set -euo pipefail
 say() { printf '%s\n' "$*"; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
-run() {
-  "$@"
-}
-
 ensure_termux_deps() {
   local -a pkgs=()
   local p
@@ -21,7 +17,7 @@ ensure_termux_deps() {
   done
 
   if ((${#pkgs[@]} > 0)); then
-    run pkg install -y "${pkgs[@]}"
+    pkg install -y "${pkgs[@]}"
   fi
 }
 
@@ -37,21 +33,22 @@ print_selected_dir_blue() {
 }
 
 choose_dir_no_storage_checks() {
-  SELECTED_DIR="$PWD"
+  STORAGE_LOCATION="$PWD"
 
   have fzf || return 0
+  [[ -d /sdcard && -r /sdcard ]] || return 0
 
   local choice
   choice="$(find /sdcard/ \
       \( -path '/sdcard/Android' -o -path '/sdcard/Android/*' -o -path '*/.*' \) -prune -o \
-      -type d -print 2>/dev/null \
+      -type d -print \
     | fzf --prompt='Select a folder: ' --height=40% --layout=reverse --no-multi)" || true
 
   if [[ -n "${choice:-}" ]]; then
-    SELECTED_DIR="$choice"
+    STORAGE_LOCATION="$choice"
   fi
 
-  STORAGE_LOCATION="$SELECTED_DIR"
+  SELECTED_DIR="$STORAGE_LOCATION"
   export SELECTED_DIR STORAGE_LOCATION
 }
 
